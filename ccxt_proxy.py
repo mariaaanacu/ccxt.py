@@ -4,13 +4,17 @@ import time
 
 app = FastAPI()
 
+@app.get("/")
+def root():
+    return {"message": "✅ CCXT Proxy is running! Use /ohlcv or /price_impact endpoints."}
+
 @app.get("/ohlcv")
 def get_ohlcv(
     exchange: str = Query(..., description="Exchange ex: binance"),
     symbol: str = Query(..., description="Trading pair ex: ARB/USDT"),
     timeframe: str = Query("1m", description="Interval (1m, 5m, 15m, 1h, 4h)"),
-    since: int = Query(..., description="UNIX timestamp in ms (when event happened)"),
-    limit: int = Query(200, description="Number of candles")
+    since: int = Query(..., description="UNIX timestamp în ms (momentul știrii)"),
+    limit: int = Query(200, description="Număr de candles")
 ):
     try:
         ex = getattr(ccxt, exchange)()
@@ -18,40 +22,33 @@ def get_ohlcv(
         return {"exchange": exchange, "symbol": symbol, "timeframe": timeframe, "ohlcv": data}
     except Exception as e:
         return {"error": str(e)}
+
 @app.get("/price_impact")
-def price_impact(
+def get_price_impact(
     exchange: str = Query(..., description="Exchange ex: binance"),
     symbol: str = Query(..., description="Trading pair ex: ARB/USDT"),
-    since: int = Query(..., description="UNIX timestamp in ms (event time)")
+    since: int = Query(..., description="UNIX timestamp în ms (momentul știrii)")
 ):
     try:
         ex = getattr(ccxt, exchange)()
-        # Luăm 12h de date minute-level după eveniment
-        data = ex.fetch_ohlcv(symbol, timeframe="1m", since=since, limit=720)
+        ohlcv = ex.fetch_ohlcv(symbol, timeframe="1m", since=since, limit=720)  # ~12h
+        if not ohlcv:
+            return {"error": "No OHLCV data found"}
 
-        if not data or len(data) < 10:
-            return {"error": "Not enough OHLCV data"}
+        start_price = ohlcv[0][1]  # open price
+        impacts = {}
 
-        start_price = data[0][1]  # open price prima lumânare
-        end_price_15m = data[min(15, len(data)-1)][4]
-        end_price_1h = data[min(60, len(data)-1)][4]
-        end_price_4h = data[min(240, len(data)-1)][4]
-        end_price_12h = data[min(720, len(data)-1)][4]
-
-        def pct_change(start, end):
-            return round(((end - start) / start) * 100, 2)
+        windows = {"15m": 15, "1h": 60, "4h": 240, "12h": 720}
+        for label, mins in windows.items():
+            if len(ohlcv) >= mins:
+                close_price = ohlcv[mins-1][4]  # close
+                impacts[label] = round(((close_price - start_price) / start_price) * 100, 2)
 
         return {
             "exchange": exchange,
             "symbol": symbol,
             "start_price": start_price,
-            "impact": {
-                "15m": pct_change(start_price, end_price_15m),
-                "1h": pct_change(start_price, end_price_1h),
-                "4h": pct_change(start_price, end_price_4h),
-                "12h": pct_change(start_price, end_price_12h)
-            }
+            "impact": impacts
         }
-
     except Exception as e:
         return {"error": str(e)}
